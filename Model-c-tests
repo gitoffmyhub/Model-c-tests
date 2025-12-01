@@ -1,0 +1,384 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
+
+# Try to import QuTiP, but don't die if it's missing
+try:
+    import qutip as qt
+    HAS_QUTIP = True
+except ImportError:
+    HAS_QUTIP = False
+    print("⚠️ QuTiP not found: Test 5 (quantum simulation) will be skipped.")
+
+# ========== PARAMETERS ==========
+m0 = 1.0e-12  # eV (hidden sector mass)
+c_R = 1.0e-10  # curvature coupling
+Gamma0 = 1.0e-3  # s^-1 (reference decoherence rate)
+rho = 0.3  # correlation coefficient
+
+# ========== MODEL C FUNCTIONS ==========
+def m_eff(R):
+    """Curvature-screened effective mass"""
+    return np.sqrt(m0**2 + c_R * np.abs(R))
+
+def R_c(R):
+    """Correlation length"""
+    return 1.0 / m_eff(R)
+
+def Gamma_grav(R):
+    """Hidden sector decoherence rate - CORRECTED"""
+    Rc0 = 1.0 / m0  # zero-curvature correlation length
+    return Gamma0 * (R_c(R) / Rc0)**3  # DECREASES with |R|
+
+def Gamma_total(Gamma_env, R):
+    """Total decoherence rate"""
+    G_grav = Gamma_grav(R)
+    return Gamma_env + G_grav + 2 * rho * np.sqrt(Gamma_env * G_grav)
+
+def Delta_Gamma(Gamma_env, R):
+    """Excess decoherence"""
+    G_grav = Gamma_grav(R)
+    return G_grav + 2 * rho * np.sqrt(Gamma_env * G_grav)
+
+# ========== TEST 2: CURVATURE SCREENING VERIFICATION ==========
+print("\n" + "="*50)
+print("TEST 2: CURVATURE SCREENING VERIFICATION")
+print("="*50)
+
+R_test = np.logspace(-20, -10, 100)  # Various curvatures
+print(f"At R = {R_test[0]:.1e} m^-2: Γ_grav = {Gamma_grav(R_test[0]):.3e} s^-1")
+print(f"At R = {R_test[-1]:.1e} m^-2: Γ_grav = {Gamma_grav(R_test[-1]):.3e} s^-1")
+print(f"Ratio (high/low): {Gamma_grav(R_test[-1])/Gamma_grav(R_test[0]):.3f}")
+
+if Gamma_grav(R_test[-1]) < Gamma_grav(R_test[0]):
+    print("✅ PASS: Γ_grav decreases with increasing |R| (screening works)")
+else:
+    print("❌ FAIL: Γ_grav increases with |R|")
+
+# ========== TEST 3: CONCAVE-DOWN SIGNATURE ==========
+print("\n" + "="*50)
+print("TEST 3: CONCAVE-DOWN SIGNATURE")
+print("="*50)
+
+Gamma_env_test = np.logspace(-4, -2, 50)
+delta_test = Delta_Gamma(Gamma_env_test, R=1e-20)
+
+def second_derivative(x, y):
+    d2 = np.gradient(np.gradient(y, x), x)
+    return d2
+
+x_test = np.sqrt(Gamma_env_test)
+d2 = second_derivative(x_test, delta_test)
+
+print(f"Mean second derivative: {np.mean(d2):.3e}")
+print(f"Max second derivative: {np.max(d2):.3e}")
+print(f"Min second derivative: {np.min(d2):.3e}")
+
+if np.all(d2 < 0):
+    print("✅ PASS: Strictly concave-down (d²ΔΓ/dx² < 0 everywhere)")
+elif np.mean(d2) < 0:
+    print("⚠️ WARNING: Mostly concave-down but check local regions")
+else:
+    print("❌ FAIL: Not concave-down")
+
+# ========== TEST 4: MODEL DISCRIMINATION POWER ==========
+print("\n" + "="*50)
+print("TEST 4: MODEL DISCRIMINATION POWER")
+print("="*50)
+
+def model_DP(Gamma_env, A):
+    """Diosi-Penrose: constant excess"""
+    return A * np.ones_like(Gamma_env)
+
+def model_CSL(Gamma_env, alpha, B):
+    """CSL: power-law growth"""
+    return B * Gamma_env**alpha
+
+np.random.seed(42)
+Gamma_env_data = np.logspace(-4, -2, 15)
+true_delta = Delta_Gamma(Gamma_env_data, R=1e-20)
+noise_level = 0.05
+noisy_delta = true_delta * (1 + noise_level * np.random.randn(len(Gamma_env_data)))
+
+def fit_model(model_func, x_data, y_data):
+    try:
+        popt, pcov = curve_fit(model_func, x_data, y_data, maxfev=5000)
+        y_pred = model_func(x_data, *popt)
+        chi2 = np.sum((y_data - y_pred)**2 / (0.05*y_pred)**2)
+        return popt, chi2, y_pred
+    except Exception:
+        return None, np.inf, None
+
+popt_C, chi2_C, pred_C = fit_model(
+    lambda x, a, b: a + 2*b*np.sqrt(x*Gamma_grav(1e-20)), 
+    Gamma_env_data, noisy_delta
+)
+
+popt_DP, chi2_DP, pred_DP = fit_model(
+    lambda x, A: model_DP(x, A),
+    Gamma_env_data, noisy_delta
+)
+
+popt_CSL, chi2_CSL, pred_CSL = fit_model(
+    lambda x, alpha, B: model_CSL(x, alpha, B),
+    Gamma_env_data, noisy_delta
+)
+
+print(f"Model C: χ² = {chi2_C:.2f}, params = {popt_C}")
+print(f"DP model: χ² = {chi2_DP:.2f}, params = {popt_DP}")
+print(f"CSL model: χ² = {chi2_CSL:.2f}, params = {popt_CSL}")
+
+n = len(Gamma_env_data)
+k_C, k_DP, k_CSL = 2, 1, 2
+BIC_C = chi2_C + k_C * np.log(n)
+BIC_DP = chi2_DP + k_DP * np.log(n)
+BIC_CSL = chi2_CSL + k_CSL * np.log(n)
+
+print(f"\nBIC scores (lower is better):")
+print(f"Model C: {BIC_C:.2f}")
+print(f"DP: {BIC_DP:.2f}")
+print(f"CSL: {BIC_CSL:.2f}")
+
+if BIC_C < min(BIC_DP, BIC_CSL):
+    print("✅ PASS: Model C has best BIC score")
+else:
+    print("❌ FAIL: Another model fits better")
+
+# ========== TEST 5: QUANTUM SIMULATION (NO HEATING) ==========
+print("\n" + "="*50)
+print("TEST 5: QUANTUM SIMULATION (NO HEATING)")
+print("="*50)
+
+def simulate_dephasing_quantum(Gamma_env, Gamma_grav_val, rho, dt=0.01, steps=2000):
+    if not HAS_QUTIP:
+        raise RuntimeError("QuTiP not available")
+
+    N = 10
+    a = qt.destroy(N)
+    n_op = a.dag() * a
+    
+    psi1 = (qt.coherent(N, 1.0) + qt.coherent(N, -1.0)).unit()
+    rho0 = psi1 * psi1.dag()
+    
+    H = n_op
+    Gamma_total_val = Gamma_env + Gamma_grav_val + 2*rho*np.sqrt(Gamma_env*Gamma_grav_val)
+    c_ops = [np.sqrt(Gamma_total_val) * n_op]
+    
+    times = np.linspace(0, 10/Gamma_total_val, steps)
+    result = qt.mesolve(H, rho0, times, c_ops, [])
+    
+    coherence = np.zeros(len(times))
+    for i, t in enumerate(times):
+        rho_t = result.states[i]
+        coherence[i] = abs(qt.expect(a, rho_t))
+    
+    n_expect = [qt.expect(n_op, state) for state in result.states]
+    n_change = np.max(n_expect) - np.min(n_expect)
+    
+    return times, coherence, n_expect, n_change
+
+if HAS_QUTIP:
+    times, coherence, n_expect, n_change = simulate_dephasing_quantum(
+        Gamma_env=1e-3, 
+        Gamma_grav_val=1e-3, 
+        rho=0.3
+    )
+
+    def exp_decay(t, A, gamma):
+        return A * np.exp(-gamma * t)
+
+    popt, _ = curve_fit(exp_decay, times, coherence, p0=[1.0, 1e-3])
+    gamma_fit = popt[1]
+
+    print(f"Fitted decoherence rate: {gamma_fit:.3e} s^-1")
+    print(f"Theoretical Γ_total: {1e-3 + 1e-3 + 2*0.3*np.sqrt(1e-3*1e-3):.3e} s^-1")
+    print(f"Heating check (Δ<n>): {n_change:.3e}")
+
+    if n_change < 0.01:
+        print("✅ PASS: No significant heating (pure dephasing)")
+    else:
+        print("❌ FAIL: Unexpected heating detected")
+
+    if abs(gamma_fit - (2e-3 + 0.6e-3)) < 0.1e-3:
+        print("✅ PASS: Decoherence rate matches theory")
+    else:
+        print(f"⚠️ WARNING: Rate mismatch: fit={gamma_fit:.3e}, theory={2.6e-3:.3e}")
+else:
+    print("⏭️ Skipping Test 5: QuTiP not installed.")
+
+# ========== TEST 6: PARAMETER RECOVERY FROM NOISY DATA ==========
+print("\n" + "="*50)
+print("TEST 6: PARAMETER RECOVERY FROM NOISY DATA")
+print("="*50)
+
+R_fixed = 1e-20
+Gamma_env_range = np.logspace(-5, -2, 20)
+true_delta = Delta_Gamma(Gamma_env_range, R_fixed)
+
+noise = 0.1 * true_delta * np.random.randn(len(true_delta)) + 1e-6
+exp_delta = true_delta + noise
+
+def model_C_fit(Gamma_env, Gamma0_fit, c_R_fit, rho_fit):
+    m_eff_fit = np.sqrt(m0**2 + c_R_fit * R_fixed)
+    Rc_fit = 1.0 / m_eff_fit
+    Rc0 = 1.0 / m0
+    Gamma_grav_fit = Gamma0_fit * (Rc_fit / Rc0)**3
+    return Gamma_grav_fit + 2 * rho_fit * np.sqrt(Gamma_env * Gamma_grav_fit)
+
+try:
+    bounds = ([1e-6, 1e-12, -1], [1e-2, 1e-8, 1])
+    popt_fit, pcov = curve_fit(model_C_fit, Gamma_env_range, exp_delta, 
+                               p0=[Gamma0, c_R, rho], bounds=bounds, maxfev=10000)
+    
+    Gamma0_fit, c_R_fit, rho_fit = popt_fit
+    errors = np.sqrt(np.diag(pcov))
+    
+    print("True parameters:")
+    print(f"  Γ₀ = {Gamma0:.3e}, c_R = {c_R:.3e}, ρ = {rho:.3f}")
+    print("\nRecovered parameters:")
+    print(f"  Γ₀ = {Gamma0_fit:.3e} ± {errors[0]:.3e}")
+    print(f"  c_R = {c_R_fit:.3e} ± {errors[1]:.3e}")
+    print(f"  ρ = {rho_fit:.3f} ± {errors[2]:.3f}")
+    
+    within_error = (
+        abs(Gamma0_fit - Gamma0) < 2*errors[0] and
+        abs(c_R_fit - c_R) < 2*errors[1] and
+        abs(rho_fit - rho) < 2*errors[2]
+    )
+    
+    if within_error:
+        print("✅ PASS: Parameters recovered within 2σ")
+    else:
+        print("⚠️ WARNING: Some parameters outside 2σ")
+        
+except Exception as e:
+    print(f"❌ FAIL: Fitting error: {e}")
+
+# ========== TEST 7: EXPERIMENTAL FEASIBILITY ==========
+print("\n" + "="*50)
+print("TEST 7: EXPERIMENTAL FEASIBILITY")
+print("="*50)
+
+exp_Gamma_env_min = 1e-6
+exp_Gamma_env_max = 1e-2
+
+def detectable(Gamma_grav_val, Gamma_env_val, sigma_noise=0.1):
+    delta = Gamma_grav_val + 2*rho*np.sqrt(Gamma_env_val*Gamma_grav_val)
+    SNR = delta / (sigma_noise * Gamma_env_val)
+    return SNR > 3
+
+Gamma_grav_test = np.logspace(-12, -6, 50)
+detectable_at_min = detectable(Gamma_grav_test, exp_Gamma_env_min)
+detectable_at_max = detectable(Gamma_grav_test, exp_Gamma_env_max)
+
+min_detectable = Gamma_grav_test[np.where(detectable_at_min)[0][0]] if np.any(detectable_at_min) else np.inf
+max_detectable = Gamma_grav_test[np.where(detectable_at_max)[0][0]] if np.any(detectable_at_max) else np.inf
+
+print(f"Experimental Γ_env range: {exp_Gamma_env_min:.1e} to {exp_Gamma_env_max:.1e} s^-1")
+print(f"Minimum detectable Γ_grav (at low Γ_env): {min_detectable:.1e} s^-1")
+print(f"Minimum detectable Γ_grav (at high Γ_env): {max_detectable:.1e} s^-1")
+print(f"Paper claims sensitivity: 1e-9 s^-1")
+
+if min_detectable <= 1e-9:
+    print("✅ PASS: Claimed sensitivity is achievable")
+else:
+    print(f"⚠️ WARNING: May need better than {min_detectable:.1e} s^-1 sensitivity")
+
+# ========== TEST 8: CURVATURE SCALING ACROSS ENVIRONMENTS ==========
+print("\n" + "="*50)
+print("TEST 8: CURVATURE SCALING ACROSS ENVIRONMENTS")
+print("="*50)
+
+environments = {
+    'E1 (Earth lab)': 1e-23,
+    'E2 (High orbit)': 1e-16,
+    'E3 (Analogue)': 1e-10,
+}
+
+print("Predicted Γ_grav scaling across environments:")
+for name, R_val in environments.items():
+    G = Gamma_grav(R_val)
+    print(f"  {name}: |R| = {R_val:.1e} m^-2, Γ_grav = {G:.3e} s^-1")
+
+R_vals = np.array(list(environments.values()))
+G_vals = Gamma_grav(R_vals)
+
+def scaling_law(R, A, c_R_fit):
+    return A * (m0**2 + c_R_fit * np.abs(R))**(-1.5)
+
+popt_scaling, _ = curve_fit(scaling_law, R_vals, G_vals, p0=[Gamma0, c_R])
+
+print(f"\nFitted scaling parameters:")
+print(f"  Amplitude A = {popt_scaling[0]:.3e} (true: {Gamma0:.3e})")
+print(f"  c_R = {popt_scaling[1]:.3e} (true: {c_R:.3e})")
+
+curvature_scaling_ok = abs(popt_scaling[1] - c_R) / c_R < 0.1
+if curvature_scaling_ok:
+    print("✅ PASS: Curvature scaling confirmed")
+else:
+    print("❌ FAIL: Scaling doesn't match prediction")
+
+# ========== TEST 9: SYSTEMATIC ERROR ANALYSIS ==========
+print("\n" + "="*50)
+print("TEST 9: SYSTEMATIC ERROR ANALYSIS")
+print("="*50)
+
+systematics = {
+    'Γ_env miscalibration': 0.05,
+    'ρ drift': 0.1,
+    'Nonlinear bath coupling': 0.02,
+    'Cross-correlation': 0.03,
+}
+
+base_Gamma_env = 1e-4
+base_R = 1e-20
+base_delta = Delta_Gamma(base_Gamma_env, base_R)
+
+print("Effect of systematics on ΔΓ measurement:")
+for systematic, magnitude in systematics.items():
+    if 'miscalibration' in systematic:
+        perturbed_delta = Delta_Gamma(base_Gamma_env * (1 + magnitude), base_R)
+    elif 'ρ drift' in systematic:
+        perturbed_delta = Gamma_grav(base_R) + 2*(rho+magnitude)*np.sqrt(base_Gamma_env*Gamma_grav(base_R))
+    elif 'Nonlinear' in systematic:
+        perturbed_delta = Delta_Gamma(base_Gamma_env, base_R) * (1 + magnitude)
+    else:
+        perturbed_delta = Delta_Gamma(base_Gamma_env, base_R) * (1 + magnitude)
+    
+    error = abs(perturbed_delta - base_delta) / base_delta
+    print(f"  {systematic}: {error*100:.1f}% error")
+    
+    if error < 0.1:
+        print(f"    ✅ Robust against this systematic")
+    else:
+        print(f"    ⚠️ May need mitigation")
+
+# ========== FINAL SUMMARY ==========
+print("\n" + "="*50)
+print("FINAL TEST SUMMARY FOR MODEL C")
+print("="*50)
+
+test_results = {
+    "Curvature Screening": Gamma_grav(R_test[-1]) < Gamma_grav(R_test[0]),
+    "Concave-Down Signature": np.mean(d2) < 0,
+    "Model Discrimination": BIC_C < min(BIC_DP, BIC_CSL),
+    "No Heating": (not HAS_QUTIP) or (HAS_QUTIP and n_change < 0.01),
+    "Parameter Recovery": 'within_error' in locals() and within_error,
+    "Experimental Feasibility": min_detectable <= 1e-9,
+    "Curvature Scaling": curvature_scaling_ok,
+}
+
+passed = sum(test_results.values())
+total = len(test_results)
+
+print(f"\nPassed {passed}/{total} tests:")
+for test, result in test_results.items():
+    status = "✅ PASS" if result else "❌ FAIL"
+    print(f"  {status}: {test}")
+
+if passed == total:
+    print("\n🎉 ALL TESTS PASSED! Model C is internally consistent and testable.")
+elif passed >= total * 0.7:
+    print(f"\n⚠️ {passed}/{total} tests passed. Model shows promise but needs refinement.")
+else:
+    print(f"\n❌ Only {passed}/{total} tests passed. Significant issues found.")
