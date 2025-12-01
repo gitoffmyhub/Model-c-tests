@@ -3,6 +3,10 @@ import matplotlib.pyplot as plt
 from qutip import *
 import qutip.ipynbtools as qip
 from scipy.optimize import curve_fit
+from scipy.interpolate import UnivariateSpline
+from scipy.constants import k, hbar
+
+ħ = hbar  # use standard hbar symbol
 
 print("="*60)
 print("QUANTUM DECOHERENCE SIMULATION: MODEL C")
@@ -18,7 +22,7 @@ print("-"*40)
 # System: harmonic oscillator
 m = 1e-14  # kg (nanosphere)
 omega = 2*np.pi * 5e3  # Hz
-x0 = np.sqrt(1/(2*m*omega))  # Zero-point motion
+x0 = np.sqrt(1/(2*m*omega))  # Zero-point motion (toy units)
 
 print(f"Mass: {m:.1e} kg")
 print(f"Frequency: {omega/(2*np.pi):.0f} Hz")
@@ -106,7 +110,7 @@ for Γ_env in Γ_env_values:
     coherence = np.abs(result.states[-1].full()[0, 1])
     coherences.append(coherence)
     
-    # Calculate effective decoherence rate
+    # Effective decoherence rate
     if coherence > 0:
         Γ_eff = -np.log(coherence) / times[-1]
     else:
@@ -130,11 +134,12 @@ def model_C_fit(sqrt_Γ_env, Γ_grav, ρ):
     """ΔΓ = Γ_grav + 2ρ√(Γ_env Γ_grav)"""
     return Γ_grav + 2 * ρ * np.sqrt(sqrt_Γ_env**2 * Γ_grav)
 
-# Fit the data
 sqrt_Γ_env = np.sqrt(Γ_env_values)
-popt, pcov = curve_fit(model_C_fit, sqrt_Γ_env, ΔΓ, 
-                      p0=[Γ_grav_fixed, 0.5],
-                      bounds=([0, 0], [np.inf, 1]))
+popt, pcov = curve_fit(
+    model_C_fit, sqrt_Γ_env, ΔΓ,
+    p0=[Γ_grav_fixed, 0.5],
+    bounds=([0, 0], [np.inf, 1])
+)
 
 Γ_grav_fit, ρ_fit = popt
 Γ_grav_err, ρ_err = np.sqrt(np.diag(pcov))
@@ -145,7 +150,6 @@ print(f"ρ = {ρ_fit:.3f} ± {ρ_err:.3f}")
 print(f"Expected Γ_grav = {Γ_grav_fixed:.3e} s^-1")
 
 # Calculate second derivative to check concavity
-from scipy.interpolate import UnivariateSpline
 spline = UnivariateSpline(sqrt_Γ_env, ΔΓ, k=4)
 second_deriv = spline.derivative(n=2)(sqrt_Γ_env[5:-5])  # Avoid edges
 
@@ -173,8 +177,8 @@ for idx, color in zip(select_indices, colors):
     L = two_bath_lindbladian(Γ_env, Γ_grav_fixed, ρ_cross=0.5)
     result = mesolve(L, ρ0, times, [], [])
     coh = [np.abs(state.full()[0, 1]) for state in result.states]
-    ax1.semilogy(times, coh, color=color, 
-                label=f'Γ_env = {Γ_env:.1e} s$^{{-1}}$')
+    ax1.semilogy(times, coh, color=color,
+                 label=f'Γ_env = {Γ_env:.1e} s$^{{-1}}$')
 
 ax1.set_xlabel('Time (s)')
 ax1.set_ylabel('Coherence')
@@ -186,8 +190,8 @@ ax1.grid(True, alpha=0.3)
 ax2 = axes[0, 1]
 ax2.loglog(Γ_env_values, Γ_tot, 'o-', label='Total Γ_tot')
 ax2.loglog(Γ_env_values, Γ_env_values, '--', label='Γ_env (no grav)')
-ax2.loglog(Γ_env_values, Γ_grav_fixed * np.ones_like(Γ_env_values), 
-          '--', label='Γ_grav alone')
+ax2.loglog(Γ_env_values, Γ_grav_fixed * np.ones_like(Γ_env_values),
+           '--', label='Γ_grav alone')
 ax2.set_xlabel('Γ_env (s$^{-1}$)')
 ax2.set_ylabel('Γ_tot (s$^{-1}$)')
 ax2.set_title('Total Decoherence Rate')
@@ -253,7 +257,7 @@ print("\nMODEL DISCRIMINATION (at R_earth):")
 print("Model A (convex):  d²ΔΓ/d(√Γ)² > 0")
 print("Model B (linear):  d²ΔΓ/d(√Γ)² = 0")  
 print("Model C (concave): d²ΔΓ/d(√Γ)² < 0")
-print(f"\nOur simulation shows: d²ΔΓ/d(√Γ)² = {np.mean(second_deriv):.2e} < 0 ✓")
+print(f"\nOur simulation shows: d²ΔΓ/d(√Γ)² = {np.mean(second_deriv):.2e}")
 
 # ============================================================================
 # 7. EXPERIMENTAL SENSITIVITY ESTIMATE
@@ -261,14 +265,14 @@ print(f"\nOur simulation shows: d²ΔΓ/d(√Γ)² = {np.mean(second_deriv):.2e}
 print("\n7. EXPERIMENTAL FEASIBILITY")
 print("-"*40)
 
-# Current state-of-the-art parameters from Vinante et al. 2024
+# Current state-of-the-art parameters from Vinante et al. 2024 (order-of-magnitude)
 T = 0.1  # K
 ω_m = 2*np.pi * 5e3  # Hz
 m = 1e-14  # kg
 Q = 1e6  # Quality factor
 
-# Thermal decoherence rate
-Γ_th = k * T / (ħ * Q)  # Approximate
+# Thermal decoherence rate (very rough scaling)
+Γ_th = k * T / (ħ * Q)
 
 # Measurement-limited decoherence
 Γ_meas = 1e-4  # Typical from optomechanics
@@ -285,18 +289,50 @@ print(f"Initial ΔΓ (at Γ_env_min): {ΔΓ[0]:.1e} s^-1")
 print(f"Required integration for SNR=10: {integration_time:.0f} days")
 
 # ============================================================================
-# 8. SUMMARY
+# 8. NUMERICAL TESTS + SUMMARY
 # ============================================================================
 print("\n" + "="*60)
 print("SUMMARY: MODEL C VALIDATION")
 print("="*60)
-print("✓ Two-bath Lindbladian correctly implemented")
-print("✓ Geometric-mean decoherence law reproduced")
-print(f"✓ Clear concave-down signature confirmed (d²/dx² = {np.mean(second_deriv):.1e})")
-print(f"✓ Γ_grav extracted: {Γ_grav_fit:.2e} s^-1 (expected: {Γ_grav_fixed:.2e})")
-print(f"✓ Cross-correlation ρ: {ρ_fit:.2f} ± {ρ_err:.3f}")
-print("✓ Curvature suppression demonstrated")
-print(f"✓ Experimental feasibility: {integration_time:.0f} days for SNR=10")
-print("\nCONCLUSION: Model C produces unique, testable concave-down")
-print("signature distinguishable from all convex/linear alternatives.")
+
+tests = {}
+
+# 1. Concavity: mean second derivative must be negative
+tests["concave_down"] = (np.mean(second_deriv) < 0)
+
+# 2. Γ_grav recovered within 3σ of true value
+true_G_grav = Γ_grav_fixed
+tests["G_grav_within_3sigma"] = abs(Γ_grav_fit - true_G_grav) < 3 * Γ_grav_err
+
+# 3. ρ recovered within 3σ of true value (0.5)
+true_rho = 0.5
+tests["rho_within_3sigma"] = abs(ρ_fit - true_rho) < 3 * ρ_err
+
+# 4. Curvature suppression: Γ_grav(neutron) < Γ_grav(earth)
+G_earth = gamma_grav(R_earth)
+G_neutron = gamma_grav(R_neutron)
+tests["curvature_suppression"] = (G_neutron < G_earth)
+
+# 5. Experimental feasibility: integration time <= 7 days for SNR=10
+tests["integration_time_ok"] = (integration_time <= 7.0)
+
+def mark(ok):
+    return "✅ PASS" if ok else "❌ FAIL"
+
+print(f"{mark(tests['concave_down'])} Concave-down signature (mean d²ΔΓ/dx² = {np.mean(second_deriv):.2e})")
+print(f"{mark(tests['G_grav_within_3sigma'])} Γ_grav extracted: {Γ_grav_fit:.2e} ± {Γ_grav_err:.1e} s^-1 (true {true_G_grav:.2e})")
+print(f"{mark(tests['rho_within_3sigma'])} Cross-correlation ρ: {ρ_fit:.2f} ± {ρ_err:.3f} (true {true_rho:.2f})")
+print(f"{mark(tests['curvature_suppression'])} Curvature suppression: Γ_grav(neutron) = {G_neutron:.2e}, Γ_grav(earth) = {G_earth:.2e}")
+print(f"{mark(tests['integration_time_ok'])} Experimental feasibility: {integration_time:.0f} days for SNR=10")
+
+all_pass = all(tests.values())
+
+print("\nOverall result:")
+if all_pass:
+    print("🎉 ALL TESTS PASSED — numerical results are consistent with Model C.")
+else:
+    print("⚠️ SOME TESTS FAILED — see ❌ flags above for details.")
+
+print("\nCONCLUSION: Model C produces a concave-down ΔΓ vs √Γ_env signature")
+print("that is numerically testable and distinguishable from linear/convex alternatives.")
 print("="*60)
